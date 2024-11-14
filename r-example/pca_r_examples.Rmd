@@ -1,0 +1,465 @@
+---
+title: "PCA Assignment"
+author: "John Chandler"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(scales)
+library(reshape2)
+library(readr)
+library(ggfortify)
+```
+
+# PCA
+
+This workbook walks through the PCA example from
+the lecture. We'll read in the departmental data set
+and perform PCA on it. 
+
+``` {r data_input, echo=F}
+# Input file should be in the same dir as RMD file
+input_file <- "spend_by_dept_full.txt"
+
+dept <- read_tsv(input_file)
+dept <- dept %>% 
+  filter(total_spend>0) # drop people with negative or zero total spends. 
+
+# `dept` includes total spend, so we can 
+# get total spend by department. 
+
+dept.spend <- dept %>% 
+  melt(id.vars="owner",
+       variable.name="department",
+       value.name="spend.frac") 
+
+dept.spend <- merge(dept.spend,
+                    dept %>% select(owner,total_spend),
+                    all.x=T)
+
+dept.spend <- dept.spend %>% 
+  filter(department != "total_spend") %>% 
+  mutate(amount = total_spend * spend.frac)
+
+dept.spend <- dept.spend %>%
+  group_by(department) %>% 
+  summarize(spend = sum(amount)) %>%
+  ungroup %>% 
+  mutate(department = reorder(department,spend))
+
+```
+
+Now we've got the data read in. We have two data frames, one with the 
+raw data and one with the department spend summary.
+
+``` {r summaries, cache=T}
+Hmisc::describe(dept)
+
+knitr::kable(dept.spend)
+```
+
+Let's also take a look at spends by department.
+
+``` {r spends_by_dept}
+for.plot <- melt(dept,
+                 id.vars = "owner",
+                 variable.name="dept",
+                 value.name="spend.frac")
+
+for.plot %>% 
+  filter(dept != "total_spend") %>% 
+  group_by(dept) %>%
+  summarize(mean_pct = mean(spend.frac)) %>%
+  mutate(dept = reorder(dept,mean_pct)) %>%
+  ggplot(aes(x=mean_pct,y=dept)) + 
+  geom_point() + 
+  theme_bw() + 
+  labs(x="Fraction of Spend in Dept",
+       y="") + 
+  scale_x_continuous(labels=percent)
+
+```
+
+## Visualizing correlations
+
+Although it's not strictly necessary, the lecture includes a 
+heatmap of correlations. This is often a nice thing to include
+in papers, particularly when your audience wants you to 
+do a "correlation analysis." Here's some code that does this:
+
+``` {r correlation_heatmap}
+dc <- cor(dept %>% select(-owner,-total_spend))
+dc <- dc[,order(dept.spend$spend)]
+dc <- dc[order(dept.spend$spend),]
+dc[upper.tri(dc)] <- NA
+diag(dc) <- NA
+
+melted_cormat <- melt(dc)
+melted_cormat <- na.omit(melted_cormat)
+
+# Heatmap
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-0.3,0.3), name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+
+```
+
+## Principal Components Analysis
+
+Now we'll walk through the fitting of the PCA.
+
+``` {r pca_fit}
+
+pca1 <- dept %>% 
+  select(-owner,-total_spend) %>% 
+  prcomp
+
+summary(pca1)
+```
+
+Let's make the plot that shows the standard deviations 
+and cumulative variance from the summary.
+
+``` {r sd_plots}
+for.plot <- data.frame(sd=pca1$sdev)
+for.plot <- for.plot %>% 
+  mutate(eigs=sd^2) %>% 
+  mutate(cume.var = cumsum(eigs/sum(eigs)),
+         id=1:n())
+
+names(for.plot) <- c("Standard Deviation","eigs",
+                     "Cumulative Variance","id")
+
+for.plot <- melt(for.plot,
+                 id.vars = "id")
+
+ggplot(for.plot %>% filter(variable != "eigs"),
+       aes(x=id,y=value)) +
+  geom_line() + 
+  facet_grid(variable ~ .,
+             scales="free") + 
+  theme_bw() + 
+  scale_y_continuous(label=percent) + 
+  labs(y="Variance",
+       x="Component Number")
+```
+
+The biplots used an old package but now use `ggfortify`, which makes
+life much easier.  
+
+``` {r biplots}
+autoplot(pca1,x=1,y=2,alpha=0.1)
+
+```
+We can attempt to interpret the components by looking at the loadings. For the 
+first principal component, we see the following loadings.
+
+```{r pca1-plot}
+for.plot <- tibble(loading = pca1$rotation[,1],
+                   dept = names(pca1$rotation[,1]))
+
+# put a sensible ordering on
+for.plot <- for.plot %>% 
+  mutate(dept = forcats::fct_reorder(dept,loading))
+
+ggplot(for.plot,
+       aes(x=loading,y=dept)) + 
+  geom_point() + 
+  theme_minimal() + 
+  labs(x="First PC Loading",y="Department")
+
+```
+
+The first principal component is, essentially, deli shopping vs the more popular departments. Recall
+that we aren't interested in loadings that close to zero and that the signs are arbitrary. At the 
+bottom of the chart we have Deli, Juice Bar, and Suppplements. These are departments that have some 
+very strong customers, but are less likely to be shopped on a regular basis. At the other end we have
+the "regular grocery" departments. A high score on PC1 would likely be a regular, full-grocery 
+shopper, a low score would indicate someone who mostly used the Wedge for deli purchases. 
+
+Now let's do the same thing for PC2. 
+
+```{r pca2-plot}
+for.plot <- tibble(loading = pca1$rotation[,2],
+                   dept = names(pca1$rotation[,2]))
+
+# put a sensible ordering on
+for.plot <- for.plot %>% 
+  mutate(dept = forcats::fct_reorder(dept,loading))
+
+ggplot(for.plot,
+       aes(x=loading,y=dept)) + 
+  geom_point() + 
+  theme_minimal() + 
+  labs(x="Second PC Loading",y="Department")
+
+```
+
+This second dimension seems to capture people who shop perishable versus non-perishable items. Produce,
+meat, and deli all load highly in one direction, while Packaged Grocery and, to a lesser extent,
+supplements dominate the other direction. 
+
+## Using PCA Output
+
+The point of PCA is two-fold: to explore the structure of a 
+data set and to reduce the dimensionality of the data. Let's 
+take a look at the latter in action.
+
+Imagine we want to do a regression of total spend on the
+percentage of spend in each department. This regression has 
+18 explanatory variables and could have a pretty unwieldy output
+(particularly if there were hundreds of departments). 
+
+``` {r regression_with_pca}
+pca.to.use <- 4
+
+new.reg.dept <- dept %>% select(owner,total_spend) # a new data.frame for regression
+new.names <- c("owner","total_spend")
+
+for (i in 1:pca.to.use) {
+  new.reg.dept <- cbind(new.reg.dept,
+                        pca1$x[,i])
+  
+  new.names <- c(new.names,paste0("pca",i))
+}
+
+names(new.reg.dept) <- new.names
+```
+
+So we've built our new data set for regression. Let's
+build our model.
+
+```{r the_model}
+lm1 <- lm(total_spend ~ pca1 + pca2 + pca3 + pca4, # will use all the pca columns
+          data = new.reg.dept,
+          subset = total_spend < 20000) # get rid of very active owners 
+
+summary(lm1)
+```
+
+The residual standard error (\$2,087) is not great and the
+$R^2$ is an abysmal 0.041. This is not a good model. 
+
+Question for you: Why might it make
+sense that the model doesn't explain much of the variation in total
+spend? 
+
+Your answer: 
+The principal components capture aspects of spending, but four only explain about 
+half the variation in the data. That partial coverage, combined with the many, many 
+aspects of shoppers that define how much they spend and that are _outside_ our data, 
+makes the low explanatory power of this model not too surprising. 
+
+
+All principal components are highly significant. 
+Interpretation is tricky. We can say that an increase of 
+1 in PC1 leads to an additional spend of \$2196 (\$2008,\$2384),
+but what does that _mean_? If you look at `new.reg.dept`, you'll
+see that the first PC ranges from -0.89 to 0.38, so a change in 
+1 basically represents the full range of the data. So if someone goes
+from mostly shopping deli to mostly shopping the main part of the store, we'd expect,
+based on this not-very-good model, about $2200 more in total sales. As 
+before, we can look at the vector of weights, called `rotation`s in R 
+to get a sense of what that might mean. 
+
+From the chart above, we know this PC contrasts DELI and, to a lesser extent, JUICE BAR
+with PRODUCE, PACKAGED GROCERY, MEAT and BULK. Typically we focus
+on vars that have "large" loadings in absolute value. The signs
+is arbitrary; a result where we multiply **every** loading by -1 is
+exactly the same PCA. Here I chose 0.1 as my cutoff for "large", but
+it's a judgment call.
+
+So, this first principal component is a measure of how much someone
+shops the "main" departments (produce, packaged grocery) versus 
+how much they shop the "grab and go" departments. Even with the terrible
+$R^2$, we're getting something useful here. If you shop the main departments
+you're likely to spend more money in the store. Not rocket science, but
+a useful insight. 
+
+
+## Work For You
+
+In addition to the questions above, I'd like you to perform a PCA on 
+the owner-level sales for the top 1000 products. This data is stored in
+(pretty large) file `owner_level_top_prod_sales.txt`. The data is arranged
+so that each owner is on their own row. The first column is the owner number. The 
+subsequent columns are the sales to that owner of the given product. Let's 
+read the data in and look at the distribution of sales across owners and across
+products. 
+
+
+```{r read-prod-sales}
+d2 <- read_tsv("owner_level_top_prod_sales.txt")
+print(dim(d2)) # 2674 owners by 1000 products
+
+for.plot <- data.frame(total_sales = rowSums(d2[,-1]))
+
+ggplot(for.plot %>% filter(total_sales > 0),aes(x=total_sales)) + 
+  geom_density() + 
+  theme_minimal() + 
+  labs(y="",x="Total Sales in Data Set by Owner (log)") + 
+  scale_x_log10(label=dollar)
+
+
+for.plot <- data.frame(total_sales = colSums(d2[,-1]))
+
+ggplot(for.plot %>% filter(total_sales > 0),aes(x=total_sales)) + 
+  geom_density() + 
+  theme_minimal() + 
+  labs(y="",x="Total Sales in Data Set by Product (log)") + 
+  scale_x_log10(label=dollar)
+
+
+```
+
+
+Now let's do PCA on this data set (across products) and look at (and interpret) the first
+three principal components. Remember to remove the owner number from the PCA--we don't want 
+to try to explain variation in that. 
+
+
+```{r build-pca}
+pca2 <- d2 %>% 
+  select(-owner) %>% 
+  prcomp
+
+summary(pca2)
+
+for.plot <- data.frame(sd=pca2$sdev)
+for.plot <- for.plot %>% 
+  mutate(eigs=sd^2) %>% 
+  mutate(cume.var = cumsum(eigs/sum(eigs)),
+         id=1:n())
+
+names(for.plot) <- c("Standard Deviation","eigs",
+                     "Cumulative Variance","id")
+
+for.plot <- melt(for.plot,
+                 id.vars = "id")
+
+ggplot(for.plot %>% filter(variable != "eigs"),
+       aes(x=id,y=value)) +
+  geom_line() + 
+  facet_grid(variable ~ .,
+             scales="free") + 
+  theme_bw() + 
+  scale_y_continuous(label=percent) + 
+  labs(y="Variance",
+       x="Component Number")
+
+```
+
+
+How many components do we need to get to 50\% variation explained? What about 90\%?
+
+You can see these numbers by running the pre-melted `for.plot` code above. We need 19
+components to get above 50\% of variation and 151 to get above 90\%. That feels like a lot, 
+but it's a pretty good reduction in data to only need 15% of the variables (151/1000) but get
+90\% of the information. 
+
+Now let's look at and interpret the first three principal components. Since we have so many
+products, we'll look at the distribution of the loadings and then choose our cutoffs.
+
+```{r pca2-loadings}
+for.plot <- pca2$rotation[,1:3]
+
+for.plot <- melt(for.plot)
+
+ggplot(for.plot,aes(x=value)) + 
+  geom_density() + 
+  facet_wrap(~Var2,ncol=1,scales="free_x") + 
+  theme_minimal() + 
+  labs(x="PC Loadings",y="") 
+
+```
+
+Interpret these hard-to-read graphs. 
+
+PC1 is entirely negative. PC2 is mostly clustered around zero with some large negative values. PC3 has
+both negative and positive values, most are near zero. 
+
+Let's visualize the key products for each of the principal components and interpret them. 
+
+Since PC1 is mostly negative, let's just look at the 20 most negative products.
+
+```{r pc1-vis}
+for.plot <- tibble(loading=pca2$rotation[,1],
+                   product=names(pca2$rotation[,1]))
+
+for.plot <- for.plot %>% 
+  mutate(product = forcats::fct_reorder(product,loading))
+
+ggplot(for.plot %>% filter(loading < -0.1),
+       aes(x=-1*loading,y=product)) + 
+  geom_point() + 
+  theme_minimal() + 
+  labs(x="-1 Times PC1 Loading",y="Product")
+
+
+```
+
+These are essentially the most popular items at the grocery store. PC1 simply captures how 
+much the owner spends, particularly in the core departments. 
+
+Now let's look at PC2.
+
+```{r pc2-vis}
+for.plot <- tibble(loading=pca2$rotation[,2],
+                   product=names(pca2$rotation[,2]))
+
+for.plot <- for.plot %>% 
+  mutate(product = forcats::fct_reorder(product,loading))
+
+#for.plot %>% 
+#  filter(abs(loading) > 0.05)
+
+ggplot(for.plot %>% filter(abs(loading) > 0.05),
+       aes(x=loading,y=product)) + 
+  geom_point() + 
+  theme_minimal() + 
+  labs(x="PC2 Loading",y="Product") + 
+  geom_vline(xintercept=0)
+
+
+```
+
+PC2 is, mostly, a dimension defined by how much someone shops generic packaged grocery. We do not 
+know what items
+are included in this "product", which is also true for the second largest loading, Refrigerated Grocery.
+On the other end of the PC are items I'd classify as "high-end healthy", particularly some expensive hipster
+products like avocado and ground lamb. 
+
+Finally let's look at PC3.
+
+```{r pc3-vis}
+for.plot <- tibble(loading=pca2$rotation[,3],
+                   product=names(pca2$rotation[,3]))
+
+for.plot <- for.plot %>% 
+  mutate(product = forcats::fct_reorder(product,loading))
+
+#for.plot %>% 
+#  filter(abs(loading) > 0.05)
+# Same cutoff appears good
+
+ggplot(for.plot %>% filter(abs(loading) > 0.05),
+       aes(x=loading,y=product)) + 
+  geom_point() + 
+  theme_minimal() + 
+  labs(x="PC3 Loading",y="Product") + 
+  geom_vline(xintercept=0)
+
+
+```
+
+PC3 appears to be expensive, fancy items versus expensive, non-fancy items. We see fancy meats
+and produce loading positively, with items many Wedge shoopers would consider "basics" on the other
+side of the axis. 
+
